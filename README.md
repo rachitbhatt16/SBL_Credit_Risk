@@ -42,7 +42,7 @@ Gold    → tier-based LTV threshold rules applied, risk_status flagged (OK / BR
           equities weighted 1x, funds 0.8x, bonds 0.3x)
 ```
 
-Full notebook: [`notebooks/sbl_databricks_pipeline.py`](notebooks/sbl_databricks_pipeline.py)
+
 
 ## Key SQL logic
 
