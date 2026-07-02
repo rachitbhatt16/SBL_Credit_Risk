@@ -53,7 +53,7 @@ Gold    → tier-based LTV threshold rules applied, risk_status flagged (OK / BR
 - Regional breach-rate analysis
 - Stress-test shock simulation across 3 market decline scenarios
 
-All queries: [`sql/analysis_queries.sql`](https://dbc-ca840a5e-ce40.cloud.databricks.com/editor/queries/1300146969802624?o=7474647829306228&contextId=sql-editor)
+All queries: [`sql/analysis_queries.sql`](https://github.com/rachitbhatt16/SBL_Credit_Risk/blob/main/SQL_Queries)
 
 ## Dashboard
 
