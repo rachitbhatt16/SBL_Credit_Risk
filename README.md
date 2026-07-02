@@ -57,7 +57,9 @@ All queries: [`sql/analysis_queries.sql`](https://github.com/rachitbhatt16/SBL_C
 
 ## Dashboard
 
-7-panel Databricks SQL dashboard:
+7-panel Databricks SQL dashboard (screenshot below; [live version](YOUR_DASHBOARD_LINK) requires Databricks login to view):
+
+![Loan Portfolio Analysis Dashboard](dashboard/loan_portfolio_dashboard.png)
 
 ![Loan Portfolio Analysis Dashboard](dashboard/loan_portfolio_dashboard.png)
 
