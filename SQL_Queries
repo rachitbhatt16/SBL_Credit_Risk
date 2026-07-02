@@ -1,0 +1,190 @@
+-- ============================================================
+-- SBL Credit Risk Platform — Analysis Queries
+-- Run in order. Tables assumed under workspace.default catalog.
+-- ============================================================
+
+USE CATALOG workspace;
+USE SCHEMA default;
+
+-- ------------------------------------------------------------
+-- Setup: tier LTV rules reference table
+-- ------------------------------------------------------------
+create or replace temp view tier_rules as
+select * from values
+  ('Tier 1 - Prime',      0.70, 0.75),
+  ('Tier 2 - Standard',   0.65, 0.70),
+  ('Tier 3 - Subprime',   0.60, 0.65),
+  ('Tier 4 - High Risk',  0.50, 0.55)
+as t(credit_tier, max_ltv, maintenance_ltv);
+
+-- ------------------------------------------------------------
+-- Query 1: Count of clients per credit tier
+-- ------------------------------------------------------------
+select credit_tier, count(*) as client_count
+from clients
+group by credit_tier
+order by client_count desc;
+
+-- ------------------------------------------------------------
+-- Query 2: Average loan amount by client segment
+-- ------------------------------------------------------------
+select c.segment, round(avg(l.loan_amount), 2) as avg_loan_amount
+from loans l
+join clients c on l.client_id = c.client_id
+group by c.segment
+order by avg_loan_amount desc;
+
+-- ------------------------------------------------------------
+-- Query 3: Total collateral value by asset type
+-- ------------------------------------------------------------
+select asset_type, round(sum(market_value), 2) as total_collateral_value
+from collateral_holdings
+group by asset_type
+order by total_collateral_value desc;
+
+-- ------------------------------------------------------------
+-- Query 4: Top 10 loans by LTV ratio (single snapshot)
+-- ------------------------------------------------------------
+select
+  l.loan_id,
+  l.client_id,
+  l.credit_tier,
+  l.loan_amount,
+  round(sum(ch.market_value), 2) as total_collateral_value,
+  round(l.loan_amount / sum(ch.market_value), 4) as ltv_ratio
+from loans l
+join collateral_holdings ch on l.loan_id = ch.loan_id
+where ch.snapshot_date = '2025-06-01'
+group by l.loan_id, l.client_id, l.credit_tier, l.loan_amount
+order by ltv_ratio desc
+limit 10;
+
+-- ------------------------------------------------------------
+-- Query 5: Full LTV breach / margin-call flagging by credit tier
+-- ------------------------------------------------------------
+select
+  l.loan_id,
+  l.client_id,
+  l.credit_tier,
+  l.loan_amount,
+  round(sum(ch.market_value), 2) as collateral_value,
+  round(l.loan_amount / sum(ch.market_value), 4) as ltv_ratio,
+  r.max_ltv,
+  r.maintenance_ltv,
+  case
+    when l.loan_amount / sum(ch.market_value) > r.maintenance_ltv then 'MARGIN CALL'
+    when l.loan_amount / sum(ch.market_value) > r.max_ltv then 'BREACH - MAX LTV'
+    else 'OK'
+  end as risk_status
+from loans l
+join collateral_holdings ch on l.loan_id = ch.loan_id
+join tier_rules r on l.credit_tier = r.credit_tier
+where ch.snapshot_date = '2025-06-01'
+group by l.loan_id, l.client_id, l.credit_tier, l.loan_amount, r.max_ltv, r.maintenance_ltv
+order by ltv_ratio desc;
+
+-- ------------------------------------------------------------
+-- Query 5b: Risk status summary counts (for pie/bar chart)
+-- ------------------------------------------------------------
+with loan_risk as (
+  select
+    l.loan_id,
+    case
+      when l.loan_amount / sum(ch.market_value) > r.maintenance_ltv then 'MARGIN CALL'
+      when l.loan_amount / sum(ch.market_value) > r.max_ltv then 'BREACH - MAX LTV'
+      else 'OK'
+    end as risk_status
+  from loans l
+  join collateral_holdings ch on l.loan_id = ch.loan_id
+  join tier_rules r on l.credit_tier = r.credit_tier
+  where ch.snapshot_date = '2025-06-01'
+  group by l.loan_id, l.client_id, l.credit_tier, l.loan_amount, r.max_ltv, r.maintenance_ltv
+)
+select risk_status, count(*) as loan_count
+from loan_risk
+group by risk_status
+order by loan_count desc;
+
+-- ------------------------------------------------------------
+-- Query 5c: Breach list with severity and required top-up amount
+-- ------------------------------------------------------------
+select
+  l.loan_id,
+  l.client_id,
+  l.credit_tier,
+  l.loan_amount,
+  round(sum(ch.market_value), 2) as collateral_value,
+  round(l.loan_amount / sum(ch.market_value), 4) as ltv_ratio,
+  r.max_ltv,
+  r.maintenance_ltv,
+  round((l.loan_amount / sum(ch.market_value)) - r.max_ltv, 4) as ltv_over_by,
+  round(l.loan_amount - (sum(ch.market_value) * r.max_ltv), 2) as required_topup_amount,
+  case
+    when l.loan_amount / sum(ch.market_value) > r.maintenance_ltv then 'MARGIN CALL'
+    else 'BREACH - MAX LTV'
+  end as risk_status
+from loans l
+join collateral_holdings ch on l.loan_id = ch.loan_id
+join tier_rules r on l.credit_tier = r.credit_tier
+where ch.snapshot_date = '2025-06-01'
+group by l.loan_id, l.client_id, l.credit_tier, l.loan_amount, r.max_ltv, r.maintenance_ltv
+having l.loan_amount / sum(ch.market_value) > r.max_ltv
+order by ltv_over_by desc;
+
+-- ------------------------------------------------------------
+-- Query 6: Month-over-month collateral value change (LAG window function)
+-- ------------------------------------------------------------
+with monthly_collateral as (
+  select
+    loan_id,
+    snapshot_date,
+    round(sum(market_value), 2) as total_collateral_value
+  from collateral_holdings
+  group by loan_id, snapshot_date
+)
+select
+  loan_id,
+  snapshot_date,
+  total_collateral_value,
+  lag(total_collateral_value) over (partition by loan_id order by snapshot_date) as prev_month_value,
+  round(
+    total_collateral_value - lag(total_collateral_value) over (partition by loan_id order by snapshot_date),
+    2
+  ) as mom_change,
+  round(
+    100.0 * (total_collateral_value - lag(total_collateral_value) over (partition by loan_id order by snapshot_date))
+    / lag(total_collateral_value) over (partition by loan_id order by snapshot_date),
+    2
+  ) as mom_pct_change
+from monthly_collateral
+order by loan_id, snapshot_date;
+
+-- ------------------------------------------------------------
+-- Query 7: Region with highest % of loans breaching max_ltv
+-- ------------------------------------------------------------
+with loan_ltv as (
+  select
+    l.loan_id,
+    c.region,
+    l.credit_tier,
+    round(l.loan_amount / sum(ch.market_value), 4) as ltv_ratio
+  from loans l
+  join clients c on l.client_id = c.client_id
+  join collateral_holdings ch on l.loan_id = ch.loan_id
+  where ch.snapshot_date = '2025-06-01'
+  group by l.loan_id, c.region, l.credit_tier, l.loan_amount
+),
+flagged as (
+  select
+    ll.region,
+    case when ll.ltv_ratio > r.max_ltv then 1 else 0 end as is_breach
+  from loan_ltv ll
+  join tier_rules r on ll.credit_tier = r.credit_tier
+)
+select
+  region,
+  round(100.0 * sum(is_breach) / count(*), 2) as pct_loans_breaching,
+  count(*) as total_loans
+from flagged
+group by region
+order by pct_loans_breaching desc;
